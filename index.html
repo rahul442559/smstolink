@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Real-Time SMS Display</title>
+  <style>
+    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; padding: 16px; }
+    #card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; max-width: 680px; }
+    #row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    #messages { white-space: pre-line; }
+    #deleteBtn { display: none; padding: 8px 12px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; }
+    small { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Real-Time SMS Display</h1>
+  <div id="card">
+    <div id="row">
+      <div>
+        <div id="messages">No messages yet...</div>
+        <small id="expiresNote"></small>
+      </div>
+      <button id="deleteBtn" title="Delete this SMS">Delete</button>
+    </div>
+  </div>
+
+  <!-- same-origin socket.io client -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const messagesDiv = document.getElementById('messages');
+    const expiresNote = document.getElementById('expiresNote');
+    const deleteBtn = document.getElementById('deleteBtn');
+
+    let countdownTimer = null;
+
+    function setCountdown(expiresAt) {
+      clearInterval(countdownTimer);
+      if (!expiresAt) { expiresNote.textContent = ''; return; }
+      function tick() {
+        const ms = expiresAt - Date.now();
+        if (ms <= 0) {
+          clearInterval(countdownTimer);
+          expiresNote.textContent = 'This SMS has expired.';
+          return;
+        }
+        const s = Math.floor(ms / 1000);
+        const m = Math.floor(s / 60);
+        const ss = String(s % 60).padStart(2, '0');
+        expiresNote.textContent = `(auto-deletes in ${m}:${ss})`;
+      }
+      tick();
+      countdownTimer = setInterval(tick, 1000);
+    }
+
+    // নতুন মেসেজ এলেই UI আপডেট + কাউন্টডাউন শুরু
+    socket.on('newMessage', (data) => {
+      messagesDiv.textContent = `Received at: ${data.timestamp}\nMessage: ${data.message}`;
+      deleteBtn.style.display = 'inline-block';
+      setCountdown(data.expiresAt || null);
+    });
+
+    // মুছে গেলে বা কিছু না থাকলে
+    socket.on('messageDeleted', () => {
+      messagesDiv.textContent = 'No messages yet...';
+      deleteBtn.style.display = 'none';
+      setCountdown(null);
+    });
+
+    // Delete → আগে DELETE /sms, না হলে POST /sms/delete (fallback)
+    deleteBtn.addEventListener('click', async () => {
+      async function tryDelete() {
+        const res = await fetch('/sms', { method: 'DELETE' });
+        return res.ok;
+      }
+      async function tryFallback() {
+        const res = await fetch('/sms/delete', { method: 'POST' });
+        return res.ok;
+      }
+      try {
+        let ok = await tryDelete();
+        if (!ok) ok = await tryFallback();
+        if (!ok) alert('Failed to delete the SMS.');
+      } catch (e) {
+        alert('Network error while deleting.');
+      }
+    });
+  </script>
+</body>
+</html>
