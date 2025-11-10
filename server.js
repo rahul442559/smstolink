@@ -1,82 +1,78 @@
+// server.js
 const express = require('express');
 const bodyParser = require('body-parser');
-const http = require('http');
-const { Server } = require('socket.io');
+const path = require('path');
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
+const PORT = process.env.PORT || 3000;
 
-app.use(bodyParser.urlencoded({ extended: true }));
+/* ---------- Body parsers ---------- */
+// অ্যাপ যে ফরম্যাটে পাঠায় (FormBody -> x-www-form-urlencoded)
+app.use(bodyParser.urlencoded({ extended: false }));
+// ভবিষ্যতে যদি JSON আসে
 app.use(bodyParser.json());
 
-// ===== ৩ মিনিট TTL সহ "সর্বশেষ SMS" স্টোরেজ =====
-let latest = null;           // { message, timestamp, expiresAt }
-let autoClearTimer = null;   // setTimeout হ্যান্ডেল
+// স্ট্যাটিক (ইচ্ছা করলে index.html সার্ভ করুন)
+app.use(express.static(__dirname));
 
-// SMS রিসিভ (JSON বা x-www-form-urlencoded—দুইভাবেই কাজ করবে)
+/* ---------- Helper: message বের করার ফাংশন ---------- */
+function extractMessage(req) {
+  // ১) নরমাল কেস: req.body.message
+  if (req.body && typeof req.body === 'object' && 'message' in req.body) {
+    return String(req.body.message || '');
+  }
+
+  // ২) কিছু হোস্টে (বা ভুল header এ) পুরো বডি একটাই key হয়ে আসে
+  // যেমন: { "2025-11-10 13:17:54##+8801...##bd##0167...##Use ... code." : "" }
+  if (req.body && typeof req.body === 'object') {
+    const keys = Object.keys(req.body);
+    if (keys.length === 1 && !('message' in req.body)) {
+      return String(keys[0] || '');
+    }
+  }
+
+  // পেলাম না
+  return '';
+}
+
+/* ---------- আপনার মূল রুট ---------- */
 app.post('/sms', (req, res) => {
-  const message = req.body.key || 'No message received';
-  const timestamp = req.body.time || new Date().toISOString();
+  const raw = extractMessage(req);
 
-  // আগের অটো-ক্লিয়ার থাকলে বন্ধ করুন
-  if (autoClearTimer) clearTimeout(autoClearTimer);
+  if (!raw) {
+    console.log('No message received. headers=', req.headers, ' body=', req.body);
+    // অ্যাপকে 200 দিলেও ‘successful’ না থাকলে সে “Failed: Upload” দেখাতে পারে
+    return res.status(200).send('received but no message');
+  }
 
-  // এখন থেকে ৩ মিনিটের TTL
-  const ttlMs = 3 * 60 * 1000;
-  const expiresAt = Date.now() + ttlMs;
-  latest = { message, timestamp, expiresAt };
+  // অ্যাপ যে ফরম্যাটে পাঠায়: time##from##country##to##text
+  const parts = raw.split('##');
+  const [smsTime, from, country, to, text] = [
+    parts[0] || '',
+    parts[1] || '',
+    parts[2] || '',
+    parts[3] || '',
+    parts.slice(4).join('##') || '' // টেক্সটে যদি নিজেই '##' থাকে, নিরাপদে জোড়া লাগালাম
+  ];
 
-  console.log('Processed SMS:', { message, timestamp, expiresAt: new Date(expiresAt).toISOString() });
+  console.log('---- SMS FORWARDED ----');
+  console.log('time   :', smsTime);
+  console.log('from   :', from);
+  console.log('country:', country);
+  console.log('to     :', to);
+  console.log('text   :', text);
 
-  // সকল কানেক্টেড ক্লায়েন্টকে পাঠান
-  io.emit('newMessage', latest);
+  // TODO: এখানে চাইলে DB/save/webhook এ পাঠাতে পারেন
 
-  // TTL পার হলে অটো-ডিলিট
-  autoClearTimer = setTimeout(() => {
-    latest = null;
-    io.emit('messageDeleted', { reason: 'expired' });
-    console.log('Latest SMS auto-removed after 3 minutes.');
-  }, ttlMs);
-
-  res.status(200).json({ success: true, message: 'SMS received successfully', expiresAt });
+  // অ্যান্ড্রয়েড অ্যাপ OK ধরতে ‘successful’ টেক্সটই দিন
+  res.status(200).send('successful');
 });
 
-// ম্যানুয়াল ডিলিট (DELETE পছন্দনীয়)
-app.delete('/sms', (req, res) => {
-  if (autoClearTimer) clearTimeout(autoClearTimer);
-  if (!latest) return res.status(200).json({ success: true, message: 'No SMS to delete' });
-  latest = null;
-  io.emit('messageDeleted', { reason: 'deleted' });
-  console.log('Latest SMS deleted by user (DELETE).');
-  res.status(200).json({ success: true, message: 'SMS deleted' });
+/* ---------- Root পেজ (ঐচ্ছিক) ---------- */
+app.get('/', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// কিছু হোস্ট/প্রক্সিতে DELETE ব্লক থাকলে—ফলব্যাক
-app.post('/sms/delete', (req, res) => {
-  if (autoClearTimer) clearTimeout(autoClearTimer);
-  if (!latest) return res.status(200).json({ success: true, message: 'No SMS to delete' });
-  latest = null;
-  io.emit('messageDeleted', { reason: 'deleted' });
-  console.log('Latest SMS deleted by user (POST fallback).');
-  res.status(200).json({ success: true, message: 'SMS deleted (fallback)' });
-});
-
-// UI সার্ভ করুন
-app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/index.html');
-});
-
-// Socket.IO
-io.on('connection', (socket) => {
-  console.log('A user connected');
-  if (latest) socket.emit('newMessage', latest);
-  else socket.emit('messageDeleted', { reason: 'none' });
-  socket.on('disconnect', () => console.log('A user disconnected'));
-});
-
-// Render ইত্যাদিতে PORT এনভাইরনমেন্ট ভ্যারিয়েবল থেকে নিবে
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
