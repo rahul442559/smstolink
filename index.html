@@ -9,34 +9,39 @@
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background:#0f1115; color:#e6e7ea; }
     header { padding:16px 20px; font-size:22px; font-weight:700; background:#12141a; border-bottom:1px solid #22252e; }
     main { max-width: 900px; margin: 0 auto; padding: 16px; }
-    .card { background:#141823; border:1px solid #232835; border-radius:14px; padding:14px 16px; margin:12px 0; display:grid; grid-template-columns: 1fr auto; gap:10px; }
+    .card { background:#141823; border:1px solid #232835; border-radius:14px; padding:12px 14px; margin:10px 0; display:grid; grid-template-columns: 1fr auto; gap:10px; }
     .meta { font-size:13px; opacity:.85; }
     .row { margin:2px 0; }
     .text { grid-column: 1 / -1; white-space: pre-wrap; word-break: break-word; font-size:15px; }
     .btn-del { align-self:start; padding:8px 10px; border-radius:10px; border:1px solid #3a4254; background:#1b2130; color:#f3f4f6; cursor:pointer; }
-    .btn-del:hover { background:#222a3d; }
-    .empty { opacity:.7; text-align:center; padding:40px 0; }
-    a { color:#bcd3ff; text-decoration:none; }
+    .btn-del:hover { background:#222a3c; }
+    .empty { opacity:.7; text-align:center; padding:24px 0; }
+
     /* recent OTP highlight for 60s */
-    .card.recent .text { color: #ff4d4f; }   /* লাল রঙ */
-    .card.recent { border-color: #ff4d4f; } /* বর্ডারও একটু লাল */
+    .card.recent .text { color: #ff4d4f; }
+    .card.recent { border-color: #ff4d4f; }
   </style>
 </head>
 <body>
-  <header>SMS Receiver</header>
+  <header>📩 SMS Receiver</header>
   <main>
-    <div id="list" class="list"></div>
-    <div id="empty" class="empty" style="display:none">No messages yet.</div>
+    <div id="list"></div>
+    <div id="empty" class="empty">No messages yet…</div>
   </main>
 
   <script>
     const listEl = document.getElementById('list');
     const emptyEl = document.getElementById('empty');
-
-    const state = new Map(); // id -> record
+    const state = new Map(); // id -> rec
 
     function setEmpty() {
-      emptyEl.style.display = state.size ? 'none' : 'block';
+      const display = state.size ? 'none' : 'block';
+      emptyEl.style.display = display;
+    }
+
+    function escapeHtml(s) {
+      if (s == null) return '';
+      return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
     }
 
     function cardTpl(rec) {
@@ -53,8 +58,9 @@
           <button class="btn-del" data-id="${rec.id}" title="Delete this message">Delete</button>
         </div>
       `;
-      wrap.querySelector('.btn-del').addEventListener('click', async (e) => {
-        const id = e.currentTarget.getAttribute('data-id');
+      // delete handler
+      wrap.querySelector('.btn-del').addEventListener('click', async (ev) => {
+        const id = ev.currentTarget.getAttribute('data-id');
         try { await fetch(`/api/messages/${id}`, { method: 'DELETE' }); }
         catch (err) { console.error(err); }
       });
@@ -66,8 +72,18 @@
       const el = cardTpl(rec);
       if (listEl.firstChild) listEl.insertBefore(el, listEl.firstChild);
       else listEl.appendChild(el);
+
+      // ✅ highlight only OTP-like messages for 60s
+      const txt = (rec?.parts?.text || '');
+      const isOtp = /\b(?:OTP|One[-\s]?Time|ওটিপি|কোড)\b/i.test(txt);
+      if (isOtp) {
+        el.classList.add('recent');
+        setTimeout(() => el.classList.remove('recent'), 60_000);
+      }
+
       setEmpty();
     }
+
     function removeCard(id) {
       state.delete(id);
       const el = document.getElementById(`msg-${id}`);
@@ -75,9 +91,19 @@
       setEmpty();
     }
 
-    // Escape helper
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    // Helpers to keep newest at top on bulk renders
+    function sortByTimeDesc(arr) {
+      return arr.slice().sort((a, b) => {
+        const ta = Date.parse(a?.parts?.time || 0);
+        const tb = Date.parse(b?.parts?.time || 0);
+        return tb - ta; // newest first
+      });
+    }
+    function addBottom(rec) {
+      state.set(rec.id, rec);
+      const el = cardTpl(rec);
+      listEl.appendChild(el);
+      setEmpty();
     }
 
     // Initial load fallback (in case SSE connects late)
@@ -86,7 +112,7 @@
         const arr = await (await fetch('/api/messages')).json();
         listEl.innerHTML = '';
         state.clear();
-        for (const rec of arr) addTop(rec);
+        for (const rec of sortByTimeDesc(arr)) addBottom(rec); // newest → top
       } catch (e) { console.warn('init fetch failed', e); }
     }
 
@@ -99,7 +125,7 @@
           if (payload.type === 'init') {
             listEl.innerHTML = '';
             state.clear();
-            for (const rec of payload.data) addTop(rec);
+            for (const rec of sortByTimeDesc(payload.data)) addBottom(rec);
           } else if (payload.type === 'new') {
             addTop(payload.data);
           } else if (payload.type === 'delete') {
@@ -115,4 +141,3 @@
   </script>
 </body>
 </html>
-
