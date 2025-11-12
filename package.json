@@ -1,7 +1,7 @@
 {
   "name": "sms-forward-receiver",
-  "version": "1.0.0",
-  "description": "Receiver for Android SMS forwarder (form-urlencoded 'message=...')",
+  "version": "1.0.1",
+  "description": "Receiver for Android SMS forwarder (form-urlencoded or JSON; SSE to browser).",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
