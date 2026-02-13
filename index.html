@@ -18,9 +18,9 @@
     .empty { opacity:.7; text-align:center; padding:40px 0; }
     a { color:#bcd3ff; text-decoration:none; }
 
-    /* মোবাইল নম্বর হাইলাইট (লাস্ট ৩ ডিজিট র‍্যান্ডম কালার) */
-    .to-number { font-weight:700; color:#cbd5e1; }
-    .to-last3 { font-weight:900; }
+    /* মোবাইল নম্বর হাইলাইট (লাস্ট ৩ ডিজিট র‍্যান্ডম কালার হবে inline style দিয়ে) */
+    .to-number { font-weight:700; }
+    .to-last3 { font-weight:800; padding:0 2px; border-radius:6px; }
   </style>
 </head>
 <body>
@@ -36,8 +36,36 @@
 
     const state = new Map(); // id -> record
 
+    // ✅ প্রতিটি SMS এর জন্য আলাদা কালার—একবার জেনারেট হলে একই SMS এ একই থাকবে
+    const colorById = new Map(); // id -> color
+
     function setEmpty() {
       emptyEl.style.display = state.size ? 'none' : 'block';
+    }
+
+    function getRandomNiceColor() {
+      // HSL: চোখে সুন্দর/উজ্জ্বল দেখাবে, ডার্ক ব্যাকগ্রাউন্ডে ভালো কনট্রাস্ট
+      const h = Math.floor(Math.random() * 360);
+      const s = 85;   // saturation
+      const l = 60;   // lightness
+      return `hsl(${h} ${s}% ${l}%)`;
+    }
+
+    function colorForMessage(id) {
+      if (!colorById.has(id)) colorById.set(id, getRandomNiceColor());
+      return colorById.get(id);
+    }
+
+    function formatToNumber(to, id) {
+      const s = String(to ?? '');
+      if (s.length <= 3) {
+        const c = colorForMessage(id);
+        return `<span class="to-last3" style="color:${c}">${escapeHtml(s)}</span>`;
+      }
+      const head = s.slice(0, -3);
+      const tail = s.slice(-3);
+      const c = colorForMessage(id);
+      return `${escapeHtml(head)}<span class="to-last3" style="color:${c}">${escapeHtml(tail)}</span>`;
     }
 
     function cardTpl(rec) {
@@ -47,7 +75,7 @@
       wrap.innerHTML = `
         <div>
           <div class="meta row"><strong>time:</strong> ${escapeHtml(rec.parts.time || '')}</div>
-          <div class="meta row"><strong>to:</strong> ${renderToNumber(rec)}</div>
+          <div class="meta row"><strong>to:</strong> <span class="to-number">${formatToNumber(rec.parts.to || '', rec.id)}</span></div>
           <div class="text"><strong>text:</strong> ${escapeHtml(rec.parts.text || '')}</div>
         </div>
         <div>
@@ -62,14 +90,9 @@
       return wrap;
     }
 
-    // নতুন কার্ড সবসময় তালিকার শুরুর দিকে বসানো হবে (top)
+    // ✅ নতুন কার্ড সবসময় তালিকার শুরুর দিকে বসানো হবে (top) — অপরিবর্তিত
     function addTop(rec) {
-      // আপডেট/নতুন SMS সবসময় একেবারে উপরে থাকবে (ডুপ্লিকেট হলে আগেরটা মুছে দিয়ে উপরে তুলবে)
       state.set(rec.id, rec);
-
-      const existing = document.getElementById(`msg-${rec.id}`);
-      if (existing) existing.remove();
-
       const el = cardTpl(rec);
       if (listEl.firstChild) listEl.insertBefore(el, listEl.firstChild);
       else listEl.appendChild(el);
@@ -78,6 +101,7 @@
 
     function removeCard(id) {
       state.delete(id);
+      colorById.delete(id); // ✅ ডিলিট হলে কালার ম্যাপ থেকেও সরিয়ে দিচ্ছি
       const el = document.getElementById(`msg-${id}`);
       if (el) el.remove();
       setEmpty();
@@ -87,42 +111,19 @@
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
     }
-function colorFor(id) {
-      // একই SMS-এর জন্য একই রঙ থাকবে, কিন্তু প্রতিটি SMS-এর জন্য আলাদা/র‍্যান্ডম-লুকিং হবে
-      const str = String(id ?? '');
-      let h = 2166136261; // FNV-1a
-      for (let i = 0; i < str.length; i++) {
-        h ^= str.charCodeAt(i);
-        h = Math.imul(h, 16777619);
-      }
-      const hue = (h >>> 0) % 360;
-      return `hsl(${hue} 85% 65%)`;
-    }
 
-    function renderToNumber(rec) {
-      const to = String(rec?.parts?.to ?? '');
-      const c = colorFor(rec?.id);
-      if (to.length <= 3) {
-        return `<span class="to-number"><span class="to-last3" style="color:${c}">${escapeHtml(to)}</span></span>`;
-      }
-      const head = to.slice(0, -3);
-      const tail = to.slice(-3);
-      return `<span class="to-number">${escapeHtml(head)}<span class="to-last3" style="color:${c}">${escapeHtml(tail)}</span></span>`;
-    }
-
-
-    // Initial load: সার্ভার যদি পুরোনো→নতুন অর্ডারে দেয়, আমরা reverse করে নতুনটাকে উপরে দেখাবো
+    // Initial load: সার্ভার যদি পুরোনো→নতুন অর্ডারে দেয়, আমরা reverse করে নতুনটাকে উপরে দেখাবো — অপরিবর্তিত
     async function bootFetch() {
       try {
         const arr = await (await fetch('/api/messages')).json();
         listEl.innerHTML = '';
         state.clear();
-        // reverse করে addTop, ফলে লেটেস্ট একেবারে উপরে
+        colorById.clear(); // ✅ রিফ্রেশে কালার রিসেট
         for (const rec of arr.slice().reverse()) addTop(rec);
       } catch (e) { console.warn('init fetch failed', e); }
     }
 
-    // Live SSE
+    // Live SSE — অপরিবর্তিত (শুধু addTop-এ আমাদের নতুন রঙ/ফরম্যাট অটো কাজ করবে)
     function bootSSE() {
       const es = new EventSource('/events');
       es.onmessage = (ev) => {
@@ -131,7 +132,7 @@ function colorFor(id) {
           if (payload.type === 'init') {
             listEl.innerHTML = '';
             state.clear();
-            // init ব্যাচ আসলে reverse করে উপরে-থেকে-নীচে লেটেস্ট→ওল্ডেস্ট
+            colorById.clear(); // ✅ init এও রিসেট
             for (const rec of payload.data.slice().reverse()) addTop(rec);
           } else if (payload.type === 'new') {
             addTop(payload.data); // নতুন এলেই একেবারে উপরে
