@@ -1,110 +1,148 @@
-// server.js — SMS receiver with SSE auto-push & per-message delete
 const express = require('express');
-const path = require('path');
+const bodyParser = require('body-parser');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const server = http.createServer(app);
+const io = new Server(server);
 
-// ---- One body reader (avoid conflicts) ----
-app.use(express.text({ type: '*/*', limit: '1mb' }));
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
 
-// ---- In-memory store ----
-let NEXT_ID = 1;
-const store = []; // { id, tsIso, parts:{ time, to, text } }
+// static files (index.html)
+app.use(express.static(__dirname));
 
-// ---- SSE clients ----
-const clients = new Set(); // each is { id, res }
-function sseSend(payload) {
-  const data = `data: ${JSON.stringify(payload)}\n\n`;
-  for (const c of clients) {
-    try { c.res.write(data); } catch {}
+/**
+ * In-memory SMS inbox
+ * record shape:
+ * {
+ *   id: string,
+ *   ts: number, // arrival time (ms) -> always newest-on-top by arrival
+ *   parts: { time: string, from: string, to: string, text: string }
+ * }
+ */
+const messages = [];
+const MAX_MESSAGES = 1000;
+
+function safeStr(v) {
+  return (v === undefined || v === null) ? '' : String(v);
+}
+
+function parseSmsTime(any) {
+  if (any === undefined || any === null || any === '') return Date.now();
+
+  if (typeof any === 'number') {
+    return any < 1e12 ? Math.floor(any * 1000) : Math.floor(any);
+  }
+
+  const s = String(any).trim();
+
+  if (/^\d{10,13}$/.test(s)) {
+    const n = Number(s);
+    return n < 1e12 ? Math.floor(n * 1000) : Math.floor(n);
+  }
+
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : Date.now();
+}
+
+function extractFirstPhoneLike(text) {
+  const s = safeStr(text);
+  const m = s.match(/(\+?88)?0?1\d{9}/);
+  return m ? m[0] : '';
+}
+
+function parseIncomingSMS(body) {
+  const text = safeStr(
+    body.text ?? body.message ?? body.body ?? body.sms ?? body.key ?? body.msg ?? body.content
+  );
+
+  const from = safeStr(
+    body.from ?? body.sender ?? body.number ?? body.mobile ?? body.phone ?? body.originatingAddress ?? body.address
+  ) || extractFirstPhoneLike(text);
+
+  const to = safeStr(body.to ?? body.receiver ?? body.destination ?? '');
+
+  const timeRaw = body.time ?? body.timestamp ?? body.date ?? body.datetime ?? body.sentAt ?? body.receivedAt;
+  const smsTs = parseSmsTime(timeRaw);
+
+  // display time uses SMS time if provided
+  const time = new Date(smsTs).toISOString();
+
+  // ordering uses ARRIVAL time so newest received always goes top
+  const arrivalTs = Date.now();
+
+  return { ts: arrivalTs, parts: { time, from, to, text } };
+}
+
+function addMessage(rec) {
+  messages.push(rec);
+  if (messages.length > MAX_MESSAGES) {
+    messages.splice(0, messages.length - MAX_MESSAGES);
   }
 }
 
-// ---- Helpers ----
-function extractMessage(raw) {
-  if (!raw || typeof raw !== 'string') return '';
-  // urlencoded
+function deleteMessageById(id) {
+  const idx = messages.findIndex(m => m.id === id);
+  if (idx === -1) return false;
+  messages.splice(idx, 1);
+  return true;
+}
+
+// receive SMS
+app.post('/sms', (req, res) => {
   try {
-    const u = new URLSearchParams(raw);
-    const m = u.get('message');
-    if (m !== null) return String(m);
-  } catch {}
-  // json
-  try {
-    const o = JSON.parse(raw);
-    if (o && typeof o === 'object' && 'message' in o) return String(o.message ?? '');
-  } catch {}
-  // plain
-  return raw;
-}
-function parseParts(parsed) {
-  const p = (parsed || '').split('##');
-  // shape from your APK: time##from##country##to##text...
-  const time = p[0] || '';
-  const to = p[3] || '';
-  const text = p.slice(4).join('##') || '';
-  return { time, to, text };
-}
+    const parsed = parseIncomingSMS(req.body || {});
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+    const rec = { id, ...parsed };
 
-// ---- Receive endpoints (both new/old paths supported) ----
-function handleIncoming(req, res) {
-  const raw = typeof req.body === 'string' ? req.body : '';
-  const parts = parseParts(extractMessage(raw));
+    addMessage(rec);
 
-  const rec = {
-    id: NEXT_ID++,
-    tsIso: new Date().toISOString(),
-    parts: { time: parts.time, to: parts.to, text: parts.text },
-  };
-  store.push(rec);
+    io.emit('sms:new', rec);
 
-  // push to clients
-  sseSend({ type: 'new', data: rec });
-
-  // APK expects "successful"
-  res.status(200).type('text/plain').send('successful');
-}
-app.post('/sms', handleIncoming);
-app.post('/android-sms/android-sms.php', handleIncoming); // backward-compat
-
-// ---- Public minimal API (no raw/headers) ----
-app.get('/api/messages', (_req, res) => {
-  res.json(store.slice().reverse()); // newest first
+    console.log('Processed SMS:', { id, from: rec.parts.from, arrivalTs: rec.ts });
+    res.status(200).json({ success: true, id });
+  } catch (err) {
+    console.error('Failed to process /sms:', err);
+    res.status(400).json({ success: false, error: 'Invalid SMS payload' });
+  }
 });
+
+// list inbox
+app.get('/api/messages', (req, res) => {
+  res.json(messages);
+});
+
+// delete single
 app.delete('/api/messages/:id', (req, res) => {
-  const id = Number(req.params.id);
-  const idx = store.findIndex(r => r.id === id);
-  if (idx !== -1) {
-    store.splice(idx, 1);
-    sseSend({ type: 'delete', id });
-  }
-  res.json({ ok: true });
+  const id = req.params.id;
+  const ok = deleteMessageById(id);
+  if (ok) io.emit('sms:delete', { id });
+  res.status(200).json({ success: true, deleted: ok });
 });
 
-// ---- SSE stream ----
-app.get('/events', (req, res) => {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
-  res.write('\n'); // open
-  const client = { id: Date.now() + Math.random(), res };
-  clients.add(client);
-
-  // send initial list (newest first)
-  res.write(`data: ${JSON.stringify({ type: 'init', data: store.slice().reverse() })}\n\n`);
-
-  // keep-alive ping
-  const ping = setInterval(() => res.write(':\n\n'), 15000);
-
-  req.on('close', () => { clearInterval(ping); clients.delete(client); });
+// optional: clear all
+app.delete('/api/messages', (req, res) => {
+  const count = messages.length;
+  messages.length = 0;
+  io.emit('sms:init', messages);
+  res.status(200).json({ success: true, cleared: count });
 });
 
-// ---- Static site ----
-app.use(express.static(path.join(__dirname)));
-app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+// UI
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/index.html');
+});
 
-app.listen(PORT, () => console.log(`Server on ${PORT}`));
+// Socket.IO
+io.on('connection', (socket) => {
+  console.log('A user connected');
+  socket.emit('sms:init', messages);
+  socket.on('disconnect', () => console.log('A user disconnected'));
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server is running on http://localhost:${PORT}`);
+});
