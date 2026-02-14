@@ -18,7 +18,7 @@
     .empty { opacity:.7; text-align:center; padding:40px 0; }
     a { color:#bcd3ff; text-decoration:none; }
 
-    /* মোবাইল নম্বর হাইলাইট (রঙ JS থেকে র‍্যান্ডম সেট হবে) */
+    /* মোবাইল নম্বর হাইলাইট - now with random colors via JS */
     .to-number { font-weight:700; }
   </style>
 </head>
@@ -39,43 +39,29 @@
       emptyEl.style.display = state.size ? 'none' : 'block';
     }
 
-    // deterministic-ish random color per to/id (stable across reload)
-    function randomToColor(seed) {
-      const h = hashCode(String(seed));
-      const hue = ((h % 360) + 360) % 360;
-      const sat = 75;
-      const lit = 60;
-      return `hsl(${hue} ${sat}% ${lit}%)`;
-    }
-
-    function hashCode(str) {
-      let hash = 0;
-      for (let i = 0; i < str.length; i++) {
-        hash = ((hash << 5) - hash) + str.charCodeAt(i);
-        hash |= 0; // 32-bit
-      }
-      return hash;
+    function getRandomColor() {
+      const hue = Math.floor(Math.random() * 360);
+      return `hsl(${hue}, 80%, 70%)`; // Bright, readable colors
     }
 
     function cardTpl(rec) {
       const wrap = document.createElement('div');
       wrap.className = 'card';
       wrap.id = `msg-${rec.id}`;
+      
+      // Generate random color for this specific card's to-number
+      const randomColor = getRandomColor();
+      
       wrap.innerHTML = `
         <div>
           <div class="meta row"><strong>time:</strong> ${escapeHtml(rec.parts.time || '')}</div>
-          <div class="meta row"><strong>to:</strong> <span class="to-number">${escapeHtml(rec.parts.to || '')}</span></div>
+          <div class="meta row"><strong>to:</strong> <span class="to-number" style="color: ${randomColor};">${escapeHtml(rec.parts.to || '')}</span></div>
           <div class="text"><strong>text:</strong> ${escapeHtml(rec.parts.text || '')}</div>
         </div>
         <div>
           <button class="btn-del" data-id="${rec.id}" title="Delete this message">Delete</button>
         </div>
       `;
-
-      // to: টেক্সটের জন্য র‌্যান্ডম কালার (প্রতি কার্ড আলাদা হতে পারে)
-      const toEl = wrap.querySelector('.to-number');
-      if (toEl) toEl.style.color = randomToColor(rec.parts.to || rec.id);
-
       wrap.querySelector('.btn-del').addEventListener('click', async (e) => {
         const id = e.currentTarget.getAttribute('data-id');
         try { await fetch(`/api/messages/${id}`, { method: 'DELETE' }); }
