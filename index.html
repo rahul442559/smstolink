@@ -1,180 +1,182 @@
-<!-- নতুন: socket.io ক্লায়েন্ট লোড (server.js যদি socket.io সার্ভ করে) -->
-<script src="/socket.io/socket.io.js"></script>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>SMS Receiver</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: dark light; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background:#0f1115; color:#e6e7ea; }
+    header { padding:16px 20px; font-size:22px; font-weight:700; background:#12141a; border-bottom:1px solid #22252e; }
+    main { max-width: 900px; margin: 0 auto; padding: 16px; }
+    .list { display: flex; flex-direction: column; gap: 12px; }
+    .card { background:#141823; border:1px solid #232835; border-radius:14px; padding:14px 16px; display:grid; grid-template-columns: 1fr auto; gap:10px; }
+    .meta { font-size:13px; opacity:.85; }
+    .row { margin:2px 0; }
+    .text { grid-column: 1 / -1; white-space: pre-wrap; word-break: break-word; font-size:15px; }
+    .btn-del { align-self:start; padding:8px 10px; border-radius:10px; border:1px solid #3a4254; background:#1b2130; color:#f3f4f6; cursor:pointer; }
+    .btn-del:hover { background:#222a3d; }
+    .empty { opacity:.7; text-align:center; padding:40px 0; }
+    a { color:#bcd3ff; text-decoration:none; }
 
-<script>
-  const listEl = document.getElementById('list');
-  const emptyEl = document.getElementById('empty');
-  const state = new Map(); // id -> record
+    /* মোবাইল নম্বর হাইলাইট - র‍্যান্ডম কালার JS-এ দেওয়া হবে */
+    .to-number { font-weight:700; }
+  </style>
+</head>
+<body>
+  <header>SMS Receiver</header>
+  <main>
+    <div id="list" class="list"></div>
+    <div id="empty" class="empty" style="display:none">No messages yet.</div>
+  </main>
 
-  function setEmpty() { emptyEl.style.display = state.size ? 'none' : 'block'; }
+  <script>
+    const listEl = document.getElementById('list');
+    const emptyEl = document.getElementById('empty');
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  }
+    const state = new Map(); // id -> record
 
-  // deterministic color from string
-  function colorFromString(s) {
-    let hash = 0;
-    for (let i = 0; i < s.length; i++) {
-      hash = s.charCodeAt(i) + ((hash << 5) - hash);
-      hash = hash & hash;
-    }
-    const hue = Math.abs(hash) % 360;
-    return `hsl(${hue},70%,50%)`;
-  }
-
-  function cardTpl(rec) {
-    const wrap = document.createElement('div');
-    wrap.className = 'card';
-    wrap.id = `msg-${rec.id}`;
-
-    const timeText = escapeHtml(rec.parts.time || '');
-    const toText = escapeHtml(rec.parts.to || '');
-    const msgText = escapeHtml(rec.parts.text || '');
-
-    wrap.innerHTML = `
-      <div>
-        <div class="meta row"><strong>time:</strong> ${timeText}</div>
-        <div class="meta row"><strong>to:</strong> <span class="to-number" data-to="${toText}">${toText}</span></div>
-        <div class="text"><strong>text:</strong> ${msgText}</div>
-      </div>
-      <div>
-        <button class="btn-del" data-id="${rec.id}" title="Delete this message">Delete</button>
-      </div>
-    `;
-
-    const toEl = wrap.querySelector('.to-number');
-    if (toEl) {
-      toEl.style.color = colorFromString(rec.parts.to || rec.parts.text || String(rec.id));
-    }
-
-    wrap.querySelector('.btn-del').addEventListener('click', async (e) => {
-      const id = e.currentTarget.getAttribute('data-id');
-      // try multiple delete endpoints (best-effort)
-      const tryList = [
-        { url: `/api/messages/${id}`, opts: { method: 'DELETE' } },
-        { url: `/sms`, opts: { method: 'DELETE' } },
-        { url: `/sms/delete`, opts: { method: 'POST' } }
-      ];
-      for (const attempt of tryList) {
-        try {
-          const resp = await fetch(attempt.url, attempt.opts);
-          if (resp.ok) {
-            // optimistic remove on success
-            removeCard(id);
-            return;
-          }
-        } catch (err) { /* ignore and try next */ }
+    // র‍্যান্ডম কালার জেনারেটর
+    function getRandomColor(str) {
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) {
+        hash = str.charCodeAt(i) + ((hash << 5) - hash);
       }
-      console.warn('Delete attempts failed for', id);
-    });
-
-    return wrap;
-  }
-
-  function addTop(rec) {
-    // ensure unique id
-    if (!rec.id) rec.id = String(Date.now()) + Math.floor(Math.random()*1000);
-    state.set(rec.id, rec);
-    const el = cardTpl(rec);
-    if (listEl.firstChild) listEl.insertBefore(el, listEl.firstChild);
-    else listEl.appendChild(el);
-    setEmpty();
-  }
-
-  function removeCard(id) {
-    state.delete(id);
-    const el = document.getElementById(`msg-${id}`);
-    if (el) el.remove();
-    setEmpty();
-  }
-
-  // Normalize many possible server payloads into { id, parts: {time,to,text} }
-  function normalizeAndAdd(raw) {
-    if (!raw) return;
-    // If the payload already matches our rec shape (has parts)
-    if (raw.parts && (raw.parts.text || raw.parts.time || raw.parts.to)) {
-      const rec = { id: raw.id || raw.parts.id || String(Date.now()), parts: raw.parts };
-      addTop(rec);
-      return;
+      
+      // ব্রাইট কালার জেনারেট করি (HSL ব্যবহার করে)
+      const h = Math.abs(hash % 360);
+      const s = 70 + (Math.abs(hash >> 8) % 20); // 70-90%
+      const l = 55 + (Math.abs(hash >> 16) % 20); // 55-75%
+      
+      return `hsl(${h}, ${s}%, ${l}%)`;
     }
-    // Common alternative shapes:
-    // { message, timestamp, expiresAt, to }
-    const text = raw.message || raw.text || raw.msg || (raw.data && raw.data.text) || '';
-    const time = raw.timestamp || raw.time || raw.ts || raw.expiresAt || (raw.data && raw.data.time) || new Date().toISOString();
-    const to = raw.to || raw.from || (raw.data && raw.data.to) || '';
-    const id = raw.id || raw.timestamp || raw.ts || String(Date.now()) + Math.floor(Math.random()*1000);
-    addTop({ id: String(id), parts: { time, to, text } });
-  }
 
-  // --- Try SSE (EventSource) first: keeps original behavior if your backend supports it ---
-  function bootSSE() {
-    try {
-      const es = new EventSource('/events');
-      es.onmessage = (ev) => {
-        try {
-          const payload = JSON.parse(ev.data);
-          // legacy payload pattern: { type:'init'|'new'|'delete', data: [...] }
-          if (payload && payload.type === 'init' && Array.isArray(payload.data)) {
-            for (const rec of payload.data.slice().reverse()) normalizeAndAdd(rec);
-          } else if (payload && payload.type === 'new') {
-            normalizeAndAdd(payload.data);
-          } else if (payload && payload.type === 'delete') {
-            if (payload.id) removeCard(payload.id);
-            else {
-              // remove all if no id given
-              for (const id of Array.from(state.keys())) removeCard(id);
-            }
-          } else {
-            // fallback: plain message object
-            normalizeAndAdd(payload);
-          }
-        } catch (e) { console.warn('SSE parse', e); }
-      };
-      es.onerror = () => console.warn('SSE disconnected or not available');
-    } catch (e) {
-      console.warn('SSE not supported', e);
+    function setEmpty() {
+      emptyEl.style.display = state.size ? 'none' : 'block';
     }
-  }
 
-  // --- Try Socket.IO if available on server ---
-  function bootSocketIO() {
-    if (typeof io === 'undefined') return;
-    try {
-      const socket = io(); // connect to server
-      socket.on('connect', () => console.log('socket.io connected'));
-      socket.on('newMessage', (payload) => {
-        normalizeAndAdd(payload);
-      });
-      // server used 'messageDeleted' in your provided server.js
-      socket.on('messageDeleted', (payload) => {
-        if (payload && payload.id) removeCard(payload.id);
-        else {
-          for (const id of Array.from(state.keys())) removeCard(id);
+    function cardTpl(rec) {
+      const wrap = document.createElement('div');
+      wrap.className = 'card';
+      wrap.id = `msg-${rec.id}`;
+      
+      // to ফিল্ডের জন্য র‍্যান্ডম কালার
+      const toColor = getRandomColor(rec.to || 'unknown');
+      
+      wrap.innerHTML = `
+        <div>
+          <div class="meta row"><strong>time:</strong> ${escapeHtml(rec.time || rec.receivedAt || '')}</div>
+          <div class="meta row"><strong>to:</strong> <span class="to-number" style="color: ${toColor}">${escapeHtml(rec.to || 'Unknown')}</span></div>
+          <div class="text"><strong>text:</strong> ${escapeHtml(rec.message || rec.text || '')}</div>
+        </div>
+        <div>
+          <button class="btn-del" data-id="${rec.id}" title="Delete this message">Delete</button>
+        </div>
+      `;
+      
+      wrap.querySelector('.btn-del').addEventListener('click', async (e) => {
+        const id = e.currentTarget.getAttribute('data-id');
+        try { 
+          await fetch(`/api/messages/${id}`, { method: 'DELETE' }); 
+        } catch (err) { 
+          console.error(err); 
         }
       });
-      // some servers might emit generic events
-      socket.on('disconnect', () => console.warn('socket.io disconnected'));
-    } catch (e) { console.warn('socket.io boot failed', e); }
-  }
+      
+      return wrap;
+    }
 
-  // --- As a last resort, try fetching an API list (if server exposes /api/messages) ---
-  async function bootFetch() {
-    try {
-      const res = await fetch('/api/messages');
-      if (!res.ok) return;
-      const arr = await res.json();
-      if (Array.isArray(arr)) {
-        for (const rec of arr.slice().reverse()) normalizeAndAdd(rec);
-      } else if (arr) {
-        normalizeAndAdd(arr);
-      }
-    } catch (e) { /* ignore failure */ }
-  }
+    // নতুন কার্ড সবসময় তালিকার শুরুর দিকে বসানো হবে
+    function addTop(rec) {
+      state.set(rec.id, rec);
+      const el = cardTpl(rec);
+      if (listEl.firstChild) listEl.insertBefore(el, listEl.firstChild);
+      else listEl.appendChild(el);
+      setEmpty();
+    }
 
-  // Start everything (will harmlessly try all available transports)
-  bootFetch();
-  bootSSE();
-  bootSocketIO();
-</script>
+    function removeCard(id) {
+      state.delete(id);
+      const el = document.getElementById(`msg-${id}`);
+      if (el) el.remove();
+      setEmpty();
+    }
 
+    // Escape helper
+    function escapeHtml(s) {
+      if (s === undefined || s === null) return '';
+      return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    }
+
+    // Live SSE
+    function bootSSE() {
+      const es = new EventSource('/events');
+      
+      es.addEventListener('init', (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          listEl.innerHTML = '';
+          state.clear();
+          // reverse করে addTop, ফলে লেটেস্ট একেবারে উপরে
+          for (const rec of data.slice().reverse()) addTop(rec);
+        } catch (e) { console.warn('init parse failed', e); }
+      });
+
+      es.addEventListener('new', (ev) => {
+        try {
+          const rec = JSON.parse(ev.data);
+          addTop(rec);
+        } catch (e) { console.warn('new parse failed', e); }
+      });
+
+      es.addEventListener('delete', (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          removeCard(data.id);
+        } catch (e) { console.warn('delete parse failed', e); }
+      });
+
+      es.onerror = () => console.warn('SSE disconnected…');
+    }
+
+    // Fallback REST API for initial load
+    async function bootFetch() {
+      try {
+        const arr = await (await fetch('/api/messages')).json();
+        listEl.innerHTML = '';
+        state.clear();
+        for (const rec of arr.slice().reverse()) addTop(rec);
+      } catch (e) { console.warn('init fetch failed', e); }
+    }
+
+    // Socket.IO (SSE না থাকলে)
+    function bootSocketIO() {
+      const socket = io();
+      
+      socket.on('init', (msgs) => {
+        listEl.innerHTML = '';
+        state.clear();
+        for (const rec of msgs.slice().reverse()) addTop(rec);
+      });
+      
+      socket.on('new', (rec) => addTop(rec));
+      
+      socket.on('delete', (data) => removeCard(data.id));
+    }
+
+    // Try SSE first, fallback to Socket.IO
+    if (typeof EventSource !== 'undefined') {
+      bootSSE();
+    } else {
+      // Load Socket.IO script if needed
+      const script = document.createElement('script');
+      script.src = '/socket.io/socket.io.js';
+      script.onload = bootSocketIO;
+      document.head.appendChild(script);
+    }
+    
+    // Also fetch initial data via REST as backup
+    bootFetch();
+  </script>
+</body>
+</html>
