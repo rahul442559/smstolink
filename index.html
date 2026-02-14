@@ -36,14 +36,29 @@
       emptyEl.style.display = state.size ? 'none' : 'block';
     }
 
+    // Escape helper
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    }
+
+    // Random readable color (value only)
+    function randomToColor() {
+      const h = Math.floor(Math.random() * 360);
+      // Visible on dark bg; keep saturation/lightness stable
+      return `hsl(${h} 90% 70%)`;
+    }
+
     function cardTpl(rec) {
       const wrap = document.createElement('div');
       wrap.className = 'card';
       wrap.id = `msg-${rec.id}`;
+
+      const toColor = randomToColor();
+
       wrap.innerHTML = `
         <div>
           <div class="meta row"><strong>time:</strong> ${escapeHtml(rec.parts.time || '')}</div>
-          <div class="meta row"><strong>to:</strong> ${escapeHtml(rec.parts.to || '')}</div>
+          <div class="meta row"><strong>to:</strong> <span style="color:${toColor}">${escapeHtml(rec.parts.to || '')}</span></div>
           <div class="text"><strong>text:</strong> ${escapeHtml(rec.parts.text || '')}</div>
         </div>
         <div>
@@ -58,6 +73,7 @@
       return wrap;
     }
 
+    // Keep: new message always goes to top
     function addTop(rec) {
       state.set(rec.id, rec);
       const el = cardTpl(rec);
@@ -65,6 +81,7 @@
       else listEl.appendChild(el);
       setEmpty();
     }
+
     function removeCard(id) {
       state.delete(id);
       const el = document.getElementById(`msg-${id}`);
@@ -72,18 +89,16 @@
       setEmpty();
     }
 
-    // Escape helper
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-    }
-
     // Initial load fallback (in case SSE connects late)
     async function bootFetch() {
       try {
-        const arr = await (await fetch('/api/messages')).json();
+        const arr = await (await fetch('/api/messages')).json(); // server returns newest first
         listEl.innerHTML = '';
         state.clear();
-        for (const rec of arr) addTop(rec);
+
+        // IMPORTANT: reverse iteration so addTop ফলাফল "newest-first" থাকে
+        for (const rec of arr.slice().reverse()) addTop(rec);
+
       } catch (e) { console.warn('init fetch failed', e); }
     }
 
@@ -96,7 +111,10 @@
           if (payload.type === 'init') {
             listEl.innerHTML = '';
             state.clear();
-            for (const rec of payload.data) addTop(rec);
+
+            // IMPORTANT: reverse iteration so addTop ফলাফল "newest-first" থাকে
+            for (const rec of payload.data.slice().reverse()) addTop(rec);
+
           } else if (payload.type === 'new') {
             addTop(payload.data);
           } else if (payload.type === 'delete') {
